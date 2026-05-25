@@ -8,7 +8,7 @@ async function getDailySeries() {
   const params = new URLSearchParams({
     function: "TIME_SERIES_DAILY",
     symbol: trackerConfig.ticker,
-    outputsize: "full",
+    outputsize: "compact",
     apikey: apiKey
   });
 
