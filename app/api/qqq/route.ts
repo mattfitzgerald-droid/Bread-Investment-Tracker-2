@@ -25,13 +25,16 @@ async function alphaVantage(functionName: string, extra: Record<string, string>)
 }
 
 function findPurchasePrice(timeSeries: Record<string, any>, targetDate: string) {
-  const dates = Object.keys(timeSeries).sort();
+  const sortedDates = Object.keys(timeSeries).sort();
 
-  const validDate = dates
-    .filter((date) => date <= targetDate)
-    .pop();
+  // find first market day ON or AFTER target date
+  const validDate = sortedDates.find(
+    (date) => date >= targetDate
+  );
 
-  if (!validDate) throw new Error("No historical price found");
+  if (!validDate) {
+    throw new Error("No historical price found");
+  }
 
   return {
     price: Number(timeSeries[validDate]["4. close"]),
