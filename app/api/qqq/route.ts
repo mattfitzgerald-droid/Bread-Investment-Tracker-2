@@ -1,49 +1,61 @@
 import { NextResponse } from "next/server";
 import { trackerConfig } from "../../config";
 
-const FALLBACK_CURRENT_QQQ_PRICE = 450;
-const FALLBACK_PURCHASE_QQQ_PRICE = 370;
+async function alphaVantage(functionName: string, extra: Record<string, string>) {
+  const apiKey = process.env.ALPHA_VANTAGE_API_KEY;
 
-async function getCurrentPriceFromStooq(symbol: string) {
-  const stooqSymbol = symbol.toLowerCase() + ".us";
-  const url = `https://stooq.com/q/l/?s=${stooqSymbol}&f=sd2t2ohlcv&h&e=csv`;
-
-  const res = await fetch(url, { next: { revalidate: 60 } });
-  if (!res.ok) throw new Error("Could not fetch Stooq quote");
-
-  const text = await res.text();
-  const lines = text.trim().split("\n");
-  const values = lines[1]?.split(",");
-
-  const close = Number(values?.[6]);
-
-  if (!Number.isFinite(close) || close <= 0) {
-    throw new Error("Stooq price unavailable");
+  if (!apiKey) {
+    throw new Error("Missing Alpha Vantage API key");
   }
 
+  const params = new URLSearchParams({
+    function: functionName,
+    symbol: trackerConfig.ticker,
+    apikey: apiKey,
+    ...extra
+  });
+
+  const res = await fetch(`https://www.alphavantage.co/query?${params.toString()}`, {
+    next: { revalidate: 60 }
+  });
+
+  if (!res.ok) throw new Error("Alpha Vantage request failed");
+
+  return res.json();
+}
+
+function findPurchasePrice(timeSeries: Record<string, any>, targetDate: string) {
+  const dates = Object.keys(timeSeries).sort();
+
+  const validDate = dates
+    .filter((date) => date <= targetDate)
+    .pop();
+
+  if (!validDate) throw new Error("No historical price found");
+
   return {
-    price: close,
-    marketTime: new Date().toISOString(),
-    currency: "USD"
+    price: Number(timeSeries[validDate]["4. close"]),
+    actualTradeDate: validDate
   };
 }
 
 export async function GET() {
   try {
-    let currentPrice = FALLBACK_CURRENT_QQQ_PRICE;
-    let source = "fallback";
+    const [quoteData, historicalData] = await Promise.all([
+      alphaVantage("GLOBAL_QUOTE", {}),
+      alphaVantage("TIME_SERIES_DAILY", { outputsize: "full" })
+    ]);
 
-    try {
-      const quote = await getCurrentPriceFromStooq(trackerConfig.ticker);
-      currentPrice = quote.price;
-      source = "stooq";
-    } catch {
-      currentPrice = FALLBACK_CURRENT_QQQ_PRICE;
-      source = "fallback";
+    const currentPrice = Number(quoteData["Global Quote"]?.["05. price"]);
+    const timeSeries = historicalData["Time Series (Daily)"];
+
+    if (!currentPrice || !timeSeries) {
+      throw new Error("Market data unavailable");
     }
 
-    const purchasePrice = FALLBACK_PURCHASE_QQQ_PRICE;
-    const shares = trackerConfig.settlementAmountUsd / purchasePrice;
+    const historical = findPurchasePrice(timeSeries, trackerConfig.purchaseDate);
+
+    const shares = trackerConfig.settlementAmountUsd / historical.price;
     const currentValue = shares * currentPrice;
     const totalReturn = currentValue - trackerConfig.settlementAmountUsd;
     const totalReturnPercent = (totalReturn / trackerConfig.settlementAmountUsd) * 100;
@@ -52,34 +64,22 @@ export async function GET() {
       ticker: trackerConfig.ticker,
       settlementAmountUsd: trackerConfig.settlementAmountUsd,
       purchaseDate: trackerConfig.purchaseDate,
-      actualTradeDate: trackerConfig.purchaseDate,
-      purchasePrice,
+      actualTradeDate: historical.actualTradeDate,
+      purchasePrice: historical.price,
       currentPrice,
       currentValue,
       shares,
       totalReturn,
       totalReturnPercent,
-      dayChangePercent: 0,
+      dayChangePercent: Number(quoteData["Global Quote"]?.["10. change percent"]?.replace("%", "") || 0),
       currency: "USD",
       marketTime: new Date().toISOString(),
-      source
+      source: "Alpha Vantage"
     });
-  } catch {
-    return NextResponse.json({
-      ticker: "QQQ",
-      settlementAmountUsd: 49.11,
-      purchaseDate: "2024-01-01",
-      actualTradeDate: "2024-01-01",
-      purchasePrice: FALLBACK_PURCHASE_QQQ_PRICE,
-      currentPrice: FALLBACK_CURRENT_QQQ_PRICE,
-      currentValue: (49.11 / FALLBACK_PURCHASE_QQQ_PRICE) * FALLBACK_CURRENT_QQQ_PRICE,
-      shares: 49.11 / FALLBACK_PURCHASE_QQQ_PRICE,
-      totalReturn: ((49.11 / FALLBACK_PURCHASE_QQQ_PRICE) * FALLBACK_CURRENT_QQQ_PRICE) - 49.11,
-      totalReturnPercent: ((((49.11 / FALLBACK_PURCHASE_QQQ_PRICE) * FALLBACK_CURRENT_QQQ_PRICE) - 49.11) / 49.11) * 100,
-      dayChangePercent: 0,
-      currency: "USD",
-      marketTime: new Date().toISOString(),
-      source: "hard-fallback"
-    });
+  } catch (error) {
+    return NextResponse.json(
+      { error: error instanceof Error ? error.message : "Unknown error" },
+      { status: 500 }
+    );
   }
 }
