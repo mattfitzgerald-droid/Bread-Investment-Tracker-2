@@ -1,65 +1,65 @@
 import { NextResponse } from "next/server";
 import { trackerConfig } from "../../config";
 
-async function alphaVantage(functionName: string, extra: Record<string, string>) {
+async function getDailySeries() {
   const apiKey = process.env.ALPHA_VANTAGE_API_KEY;
-
-  if (!apiKey) {
-    throw new Error("Missing Alpha Vantage API key");
-  }
+  if (!apiKey) throw new Error("Missing Alpha Vantage API key");
 
   const params = new URLSearchParams({
-    function: functionName,
+    function: "TIME_SERIES_DAILY",
     symbol: trackerConfig.ticker,
-    apikey: apiKey,
-    ...extra
+    outputsize: "full",
+    apikey: apiKey
   });
 
   const res = await fetch(`https://www.alphavantage.co/query?${params.toString()}`, {
-    next: { revalidate: 60 }
+    next: { revalidate: 300 }
   });
 
-  if (!res.ok) throw new Error("Alpha Vantage request failed");
+  const data = await res.json();
+  const timeSeries = data["Time Series (Daily)"];
 
-  return res.json();
-}
-
-function findPurchasePrice(timeSeries: Record<string, any>, targetDate: string) {
-  const sortedDates = Object.keys(timeSeries).sort();
-
-  // find first market day ON or AFTER target date
-  const validDate = sortedDates.find(
-    (date) => date >= targetDate
-  );
-
-  if (!validDate) {
-    throw new Error("No historical price found");
+  if (!timeSeries) {
+    throw new Error(JSON.stringify(data));
   }
 
+  return timeSeries;
+}
+
+function getPurchasePrice(timeSeries: Record<string, any>, targetDate: string) {
+  const dates = Object.keys(timeSeries).sort();
+
+  const validDate =
+    dates.find((date) => date >= targetDate) ||
+    dates.filter((date) => date <= targetDate).pop();
+
+  if (!validDate) throw new Error("No purchase price found");
+
   return {
-    price: Number(timeSeries[validDate]["4. close"]),
-    actualTradeDate: validDate
+    date: validDate,
+    price: Number(timeSeries[validDate]["4. close"])
+  };
+}
+
+function getLatestPrice(timeSeries: Record<string, any>) {
+  const dates = Object.keys(timeSeries).sort();
+  const latestDate = dates[dates.length - 1];
+
+  return {
+    date: latestDate,
+    price: Number(timeSeries[latestDate]["4. close"])
   };
 }
 
 export async function GET() {
   try {
-    const [quoteData, historicalData] = await Promise.all([
-      alphaVantage("GLOBAL_QUOTE", {}),
-      alphaVantage("TIME_SERIES_DAILY", { outputsize: "full" })
-    ]);
+    const timeSeries = await getDailySeries();
 
-    const currentPrice = Number(quoteData["Global Quote"]?.["05. price"]);
-    const timeSeries = historicalData["Time Series (Daily)"];
+    const purchase = getPurchasePrice(timeSeries, trackerConfig.purchaseDate);
+    const latest = getLatestPrice(timeSeries);
 
-    if (!currentPrice || !timeSeries) {
-      throw new Error("Market data unavailable");
-    }
-
-    const historical = findPurchasePrice(timeSeries, trackerConfig.purchaseDate);
-
-    const shares = trackerConfig.settlementAmountUsd / historical.price;
-    const currentValue = shares * currentPrice;
+    const shares = trackerConfig.settlementAmountUsd / purchase.price;
+    const currentValue = shares * latest.price;
     const totalReturn = currentValue - trackerConfig.settlementAmountUsd;
     const totalReturnPercent = (totalReturn / trackerConfig.settlementAmountUsd) * 100;
 
@@ -67,17 +67,17 @@ export async function GET() {
       ticker: trackerConfig.ticker,
       settlementAmountUsd: trackerConfig.settlementAmountUsd,
       purchaseDate: trackerConfig.purchaseDate,
-      actualTradeDate: historical.actualTradeDate,
-      purchasePrice: historical.price,
-      currentPrice,
+      actualTradeDate: purchase.date,
+      purchasePrice: purchase.price,
+      currentPrice: latest.price,
       currentValue,
       shares,
       totalReturn,
       totalReturnPercent,
-      dayChangePercent: Number(quoteData["Global Quote"]?.["10. change percent"]?.replace("%", "") || 0),
+      dayChangePercent: 0,
       currency: "USD",
-      marketTime: new Date().toISOString(),
-      source: "Alpha Vantage"
+      marketTime: latest.date,
+      source: "Alpha Vantage Daily"
     });
   } catch (error) {
     return NextResponse.json(
