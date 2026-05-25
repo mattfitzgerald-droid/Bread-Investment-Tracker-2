@@ -5,5 +5,5 @@ export const trackerConfig = {
   // Format: YYYY-MM-DD
   purchaseDate: "2026-05-23",
   appName: "Bread Investment Tracker",
-  tagline: "What if the bread settlement money went full tech bro?"
+  tagline: "The Matt Fitzgerald bread tracker"
 };
